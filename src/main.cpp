@@ -5,9 +5,7 @@
 
 #include <Arduino.h>
 #include "BluetoothSerial.h"
-#include <Adafruit_GFX.h>
-#include <Adafruit_ST7735.h>
-#include <SPI.h>
+#include <TFT_eSPI.h>         // Bus SPI por hardware (config de pines en platformio.ini)
 #include <Wire.h>             
 #include "MAX30105.h"         
 #include "heartRate.h"        
@@ -18,7 +16,7 @@
 
 #define MOTOR_PIN   13 
 
-// ST7735 Pines
+// Pines ST7789 (deben coincidir con los definidos en platformio.ini via build_flags)
 #define TFT_CS      5
 #define TFT_RST     4
 #define TFT_DC      2
@@ -58,7 +56,7 @@ uint32_t tUltimaMuestra = 0;
 
 // ESTADO GLOBAL
 BluetoothSerial SerialBT;
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+TFT_eSPI tft = TFT_eSPI();   // Pines tomados de platformio.ini (build_flags)
 MAX30105 particleSensor;
 
 volatile bool estadoConectado  = false;
@@ -119,7 +117,7 @@ void setup() {
   digitalWrite(MOTOR_PIN, LOW);
 
   // 1. Pantalla TFT Primero
-  tft.initR(INITR_144GREENTAB);   
+  tft.init();
   tft.setRotation(0);
   tft.fillScreen(C_BG);
   tft.setTextColor(C_WHITE);
