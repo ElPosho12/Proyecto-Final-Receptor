@@ -118,7 +118,7 @@ void setup() {
 
   // 1. Pantalla TFT Primero
   tft.init();
-  tft.setRotation(0);
+  tft.setRotation(2);
   tft.fillScreen(C_BG);
   tft.setTextColor(C_WHITE);
   tft.setTextSize(1);
@@ -228,53 +228,173 @@ void dibujarPantalla1BT() {
 }
 void dibujarPantalla2Monitoreo() { 
   tft.fillScreen(C_BG); tft.fillRect(0, 0, 128, 14, C_DARKGRAY);
-  dibujarIconoBT(6, 7, C_CYAN, 4); tft.setTextSize(1); tft.setTextColor(C_CYAN); tft.setCursor(16, 3); tft.print("BT OK"); 
-  if (!oximetroActivo) { tft.setTextColor(C_ORANGE); tft.setCursor(60, 3); tft.print("OXI OFF"); } 
+  dibujarIconoBT(6, 7, C_CYAN, 4); 
+  tft.setTextSize(1); tft.setTextColor(C_CYAN); tft.setCursor(16, 3); tft.print("BT OK"); 
+  if (!oximetroActivo) { 
+    tft.setTextColor(C_ORANGE); tft.setCursor(60, 3); tft.print("OXI OFF"); 
+  } 
   tft.drawFastHLine(0, 14, 128, C_GRAY); tft.drawFastHLine(0, 70, 128, C_GRAY); 
   dibujarCorazon(54, 30, C_RED, 3); tft.setTextSize(3); tft.setTextColor(C_WHITE); tft.setCursor(36, 44); 
-  if (lecturaValida && bpmActual > 0) tft.printf("%3d", (int)bpmActual); else tft.print("---"); 
+  if (lecturaValida && bpmActual > 0) 
+  tft.printf("%3d", (int)bpmActual); 
+  else 
+  tft.print("---"); 
   tft.setTextSize(1); tft.setTextColor(C_GRAY); tft.setCursor(52, 62); tft.print("LPM"); 
-  dibujarGotita(34, 92, C_CYAN); dibujarGotita(56, 92, C_CYAN); dibujarGotita(78, 92, C_CYAN); 
+  dibujarGotita(34, 92, C_CYAN); 
+  dibujarGotita(56, 92, C_CYAN); 
+  dibujarGotita(78, 92, C_CYAN); 
   tft.setTextSize(3); tft.setTextColor(C_WHITE); tft.setCursor(28, 106); 
-  if (lecturaValida && spo2Actual > 0) tft.printf("%2d%%", (int)spo2Actual); else tft.print("--%"); 
+  if (lecturaValida && spo2Actual > 0) 
+  tft.printf("%2d%%", (int)spo2Actual); 
+  else 
+  tft.print("--%"); 
   tft.setTextSize(1); tft.setTextColor(C_GRAY); tft.setCursor(46, 122); tft.print("SpO2"); 
 }
 void dibujarPantalla3Resumen() { 
   tft.fillScreen(C_BG); tft.fillRect(0, 0, 128, 16, C_DARKGRAY); tft.setTextSize(1); tft.setTextColor(C_WHITE); tft.setCursor(12, 4); tft.print("RESUMEN DEL SUENO"); 
-  uint16_t mLigero, mProfundo, mREM, mTotal; calcularResumen(mLigero, mProfundo, mREM, mTotal); 
-  String sLig = formatearTiempo(mLigero); String sProf = formatearTiempo(mProfundo); String sREM = formatearTiempo(mREM); String sTot = formatearTiempo(mTotal); 
+  uint16_t mLigero, mProfundo, mREM, mTotal; 
+  calcularResumen(mLigero, mProfundo, mREM, mTotal); 
+  String sLig = formatearTiempo(mLigero); 
+  String sProf = formatearTiempo(mProfundo); 
+  String sREM = formatearTiempo(mREM); 
+  String sTot = formatearTiempo(mTotal); 
   uint16_t barMax = 80; 
   uint16_t wLig = (mTotal > 0) ? (uint16_t)((long)mLigero * barMax / mTotal) : 0; 
-  tft.setTextColor(C_GREEN); tft.setCursor(2, 26); tft.print("Ligero"); tft.fillRect(44, 24, wLig > 0 ? wLig : 2, 9, C_GREEN); tft.setTextColor(C_WHITE); tft.setCursor(126 - 6*(int)sLig.length(), 26); tft.print(sLig); 
+  tft.setTextColor(C_GREEN); tft.setCursor(2, 26); tft.print("Ligero"); tft.fillRect(44, 24, wLig > 0 ? wLig : 2, 9, C_GREEN); 
+  tft.setTextColor(C_WHITE); tft.setCursor(126 - 6*(int)sLig.length(), 26); tft.print(sLig); 
   uint16_t wProf = (mTotal > 0) ? (uint16_t)((long)mProfundo * barMax / mTotal) : 0; 
-  tft.setTextColor(C_BLUE); tft.setCursor(2, 46); tft.print("Profundo"); tft.fillRect(44, 44, wProf > 0 ? wProf : 2, 9, C_BLUE); tft.setTextColor(C_WHITE); tft.setCursor(126 - 6*(int)sProf.length(), 46); tft.print(sProf); 
+  tft.setTextColor(C_BLUE); tft.setCursor(2, 46); tft.print("Profundo"); tft.fillRect(44, 44, wProf > 0 ? wProf : 2, 9, C_BLUE); 
+  tft.setTextColor(C_WHITE); tft.setCursor(126 - 6*(int)sProf.length(), 46); tft.print(sProf); 
   uint16_t wREM = (mTotal > 0) ? (uint16_t)((long)mREM * barMax / mTotal) : 0;
-  tft.setTextColor(C_ORANGE); tft.setCursor(2, 66); tft.print("REM"); tft.fillRect(44, 64, wREM > 0 ? wREM : 2, 9, C_ORANGE); tft.setTextColor(C_WHITE); tft.setCursor(126 - 6*(int)sREM.length(), 66); tft.print(sREM); 
+  tft.setTextColor(C_ORANGE); tft.setCursor(2, 66); tft.print("REM"); tft.fillRect(44, 64, wREM > 0 ? wREM : 2, 9, C_ORANGE); 
+  tft.setTextColor(C_WHITE); tft.setCursor(126 - 6*(int)sREM.length(), 66); tft.print(sREM); 
   tft.drawFastHLine(0, 84, 128, C_GRAY); tft.setTextSize(1); tft.setTextColor(C_GRAY); tft.setCursor(2, 90); tft.print("Total:"); 
   tft.setTextColor(C_WHITE); tft.setTextSize(2); tft.setCursor(46, 88); tft.print(sTot); 
-  delay(200); borrarArrayMuestras(); 
+  delay(200); 
+  borrarArrayMuestras(); 
 }
 void actualizarValoresMonitoreo() { 
-  static const byte TASA_PROMEDIO = 4; static byte tasas[TASA_PROMEDIO]; static byte indice = 0; static long totalTasas = 0; static long ultimoLatido = 0; 
+  static const byte TASA_PROMEDIO = 4; 
+  static byte tasas[TASA_PROMEDIO]; 
+  static byte indice = 0; 
+  static long totalTasas = 0; 
+  static long ultimoLatido = 0; 
   long valor = particleSensor.getIR(); 
   if (valor < 50000) { 
-    lecturaValida = false; tft.setTextSize(3); tft.setTextColor(C_WHITE); tft.fillRect(36, 44, 60, 22, C_BG); tft.setCursor(36, 44); tft.print("---"); tft.fillRect(28, 106, 72, 22, C_BG); tft.setCursor(28, 106); tft.print("--%"); return; 
+    lecturaValida = false; 
+    tft.setTextSize(3); 
+    tft.setTextColor(C_WHITE); 
+    tft.fillRect(36, 44, 60, 22, C_BG); 
+    tft.setCursor(36, 44); tft.print("---"); 
+    tft.fillRect(28, 106, 72, 22, C_BG); 
+    tft.setCursor(28, 106); 
+    tft.print("--%"); 
+    return; 
   } 
   if (checkForBeat(valor)) { 
-    long delta = millis() - ultimoLatido; ultimoLatido = millis(); float beatsPerMinute = 60.0f / (delta / 1000.0f); 
-    if (beatsPerMinute < 255 && beatsPerMinute > 20) { totalTasas -= tasas[indice]; tasas[indice] = (byte)beatsPerMinute; totalTasas += tasas[indice]; indice = (indice + 1) % TASA_PROMEDIO; bpmActual = totalTasas / TASA_PROMEDIO; } 
+    long delta = millis() - ultimoLatido; 
+    ultimoLatido = millis(); 
+    float beatsPerMinute = 60.0f / (delta / 1000.0f); 
+    if (beatsPerMinute < 255 && beatsPerMinute > 20) {
+      totalTasas -= tasas[indice]; 
+      tasas[indice] = (byte)beatsPerMinute; 
+      totalTasas += tasas[indice]; 
+      indice = (indice + 1) % TASA_PROMEDIO; 
+      bpmActual = totalTasas / TASA_PROMEDIO; 
+    } 
   } 
   long rojo = particleSensor.getRed(); 
-  if (rojo > 0 && valor > 0) { float ratio = (float)rojo / (float)valor; float spo2Calc = 110.0f - 25.0f * ratio; spo2Calc = constrain(spo2Calc, 85.0f, 100.0f); spo2Actual = (int32_t)spo2Calc; lecturaValida = true; } 
+  if (rojo > 0 && valor > 0) {
+    float ratio = (float)rojo / (float)valor; 
+    float spo2Calc = 110.0f - 25.0f * ratio;
+    spo2Calc = constrain(spo2Calc, 85.0f, 100.0f); 
+    spo2Actual = (int32_t)spo2Calc; lecturaValida = true; 
+  }
+
   static int32_t bAnt = -1, sAnt = -1; 
-  if (bpmActual != bAnt) { tft.setTextSize(3); tft.setTextColor(C_WHITE); tft.fillRect(28, 44, 80, 22, C_BG); tft.setCursor(36, 44); if (bpmActual > 0) tft.printf("%3d", (int)bpmActual); else tft.print("---"); bAnt = bpmActual; } 
-  if (spo2Actual != sAnt) { tft.setTextSize(3); tft.setTextColor(C_WHITE); tft.fillRect(20, 106, 88, 22, C_BG); tft.setCursor(28, 106); if (spo2Actual > 0) tft.printf("%2d%%", (int)spo2Actual); else tft.print("--%"); sAnt = spo2Actual; } 
+  if (bpmActual != bAnt) {
+    tft.setTextSize(3); 
+    tft.setTextColor(C_WHITE); 
+    tft.fillRect(28, 44, 80, 22, C_BG); 
+    tft.setCursor(36, 44); 
+    if (bpmActual > 0) 
+    tft.printf("%3d", (int)bpmActual); 
+    else tft.print("---"); 
+    bAnt = bpmActual; 
+  }
+
+  if (spo2Actual != sAnt){ 
+    tft.setTextSize(3); 
+    tft.setTextColor(C_WHITE); 
+    tft.fillRect(20, 106, 88, 22, C_BG); 
+    tft.setCursor(28, 106); 
+    if (spo2Actual > 0) 
+    tft.printf("%2d%%", (int)spo2Actual); else tft.print("--%"); 
+    sAnt = spo2Actual; 
+  } 
 }
-void registrarMuestra() { if (indiceMuestra >= MAX_MUESTRAS) return; int32_t variabilidad = abs(bpmActual - bpmAnterior); FaseSueno fase = clasificarFase(bpmActual, variabilidad); muestrasFase[indiceMuestra++] = (uint8_t)fase; bpmAnterior = bpmActual; }
-FaseSueno clasificarFase(int32_t bpm, int32_t variabilidad) { if (bpm <= 0) return FASE_NINGUNA; if (variabilidad >= UMBRAL_VAR_ALTO && bpm >= PULSO_REM_MIN) return FASE_REM; if (bpm >= PULSO_PROF_MIN && bpm <= PULSO_PROF_MAX && variabilidad < UMBRAL_VAR_BAJO) return FASE_PROFUNDO; return FASE_LIGERO; }
-void calcularResumen(uint16_t &l, uint16_t &p, uint16_t &r, uint16_t &t) { l = p = r = 0; for (uint16_t i = 0; i < indiceMuestra; i++) { if (muestrasFase[i] == FASE_LIGERO) l++; else if (muestrasFase[i] == FASE_PROFUNDO) p++; else if (muestrasFase[i] == FASE_REM) r++; } t = l + p + r; }
-void borrarArrayMuestras() { memset(muestrasFase, 0, sizeof(muestrasFase)); indiceMuestra = 0; bpmAnterior = 0; tUltimaMuestra = millis(); }
-String formatearTiempo(uint16_t muestras) { uint32_t seg = (uint32_t)muestras * 30; char buf[8]; snprintf(buf, sizeof(buf), "%dh%02dm", (int)(seg / 3600), (int)((seg % 3600) / 60)); return String(buf); }
-void dibujarCorazon(int16_t x, int16_t y, uint16_t color, uint8_t escala) { static const uint8_t corazon[4][5] = { {0,1,0,1,0}, {1,1,1,1,1}, {0,1,1,1,0}, {0,0,1,0,0} }; int16_t ox = x - (5 * escala) / 2; int16_t oy = y - (4 * escala) / 2; for (int fy = 0; fy < 4; fy++) { for (int fx = 0; fx < 5; fx++) { if (corazon[fy][fx]) tft.fillRect(ox + fx * escala, oy + fy * escala, escala, escala, color); } } }
-void dibujarGotita(int16_t x, int16_t y, uint16_t color) { tft.fillCircle(x, y + 4, 5, color); tft.fillTriangle(x, y - 5, x - 4, y + 2, x + 4, y + 2, color); }
-void dibujarIconoBT(int16_t cx, int16_t cy, uint16_t color, uint8_t r) { tft.drawFastVLine(cx, cy - r, 2 * r, color); tft.drawLine(cx, cy - r, cx + r, cy - r/2, color); tft.drawLine(cx + r, cy - r/2, cx, cy, color); tft.drawLine(cx, cy, cx + r, cy + r/2, color); tft.drawLine(cx + r, cy + r/2, cx, cy + r, color); }
+
+void registrarMuestra() { 
+  if (indiceMuestra >= MAX_MUESTRAS) 
+   return; 
+  int32_t variabilidad = abs(bpmActual - bpmAnterior); 
+  FaseSueno fase = clasificarFase(bpmActual, variabilidad); 
+  muestrasFase[indiceMuestra++] = (uint8_t)fase; bpmAnterior = bpmActual;
+}
+
+FaseSueno clasificarFase(int32_t bpm, int32_t variabilidad) {
+  if (bpm <= 0) 
+    return FASE_NINGUNA;
+  if (variabilidad >= UMBRAL_VAR_ALTO && bpm >= PULSO_REM_MIN) 
+    return FASE_REM; 
+  if (bpm >= PULSO_PROF_MIN && bpm <= PULSO_PROF_MAX && variabilidad < UMBRAL_VAR_BAJO) 
+    return FASE_PROFUNDO; return FASE_LIGERO; 
+}
+
+void calcularResumen(uint16_t &l, uint16_t &p, uint16_t &r, uint16_t &t) {
+   l = p = r = 0; 
+   for (uint16_t i = 0; i < indiceMuestra; i++) { 
+    if (muestrasFase[i] == FASE_LIGERO) 
+    l++; 
+    else if (muestrasFase[i] == FASE_PROFUNDO) 
+    p++; 
+    else if (muestrasFase[i] == FASE_REM) 
+    r++;
+  } 
+  t = l + p + r;
+}
+
+void borrarArrayMuestras() { 
+  memset(muestrasFase, 0, sizeof(muestrasFase));
+   indiceMuestra = 0; bpmAnterior = 0;
+    tUltimaMuestra = millis();
+   }
+
+String formatearTiempo(uint16_t muestras) {
+   uint32_t seg = (uint32_t)muestras * 30; char buf[8];
+   snprintf(buf, sizeof(buf), "%dh%02dm", (int)(seg / 3600), (int)((seg % 3600) / 60));
+    return String(buf);
+   }
+
+void dibujarCorazon(int16_t x, int16_t y, uint16_t color, uint8_t escala) {
+   static const uint8_t corazon[4][5] = { {0,1,0,1,0}, {1,1,1,1,1}, {0,1,1,1,0}, {0,0,1,0,0} };
+   int16_t ox = x - (5 * escala) / 2;
+   int16_t oy = y - (4 * escala) / 2;
+   for (int fy = 0; fy < 4; fy++) { for (int fx = 0; fx < 5; fx++) {
+     if (corazon[fy][fx]) 
+       tft.fillRect(ox + fx * escala, oy + fy * escala, escala, escala, color);
+    } 
+  } 
+}
+void dibujarGotita(int16_t x, int16_t y, uint16_t color) {
+   tft.fillCircle(x, y + 4, 5, color); 
+   tft.fillTriangle(x, y - 5, x - 4, y + 2, x + 4, y + 2, color);
+  }
+
+void dibujarIconoBT(int16_t cx, int16_t cy, uint16_t color, uint8_t r) { 
+  tft.drawFastVLine(cx, cy - r, 2 * r, color); 
+  tft.drawLine(cx, cy - r, cx + r, cy - r/2, color); 
+  tft.drawLine(cx + r, cy - r/2, cx, cy, color); 
+  tft.drawLine(cx, cy, cx + r, cy + r/2, color); 
+  tft.drawLine(cx + r, cy + r/2, cx, cy + r, color); 
+}
