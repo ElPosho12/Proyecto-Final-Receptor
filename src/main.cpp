@@ -1,24 +1,12 @@
-/*
- * RECEPTOR — ESP32
- * Pantalla ST7735 128x128 + Sensor MAX30102 + Bluetooth Serial + Lectura Batería
- *
- * CAMBIOS DE BLUETOOTH:
- *  - Se elimino la tarea de reconexion saliente: ahora el receptor es esclavo
- *    puro y el unico que inicia la conexion es el emisor. Con los dos haciendo
- *    de master al mismo tiempo se pisaban el radio y el emparejamiento tardaba
- *    muchisimo.
- *  - Se fuerza el modo visible/conectable despues de begin().
- *  - El pulso del motor salio del callback del stack BT (ahi un delay() traba
- *    la tarea de Bluetooth): ahora se maneja con una bandera desde el loop.
- */
+// Receptor ESP32: TFT horizontal + MAX30102 + Bluetooth Serial
 
 #include <Arduino.h>
 #include "BluetoothSerial.h"
-#include <TFT_eSPI.h>         // Bus SPI por hardware (config de pines en platformio.ini)
+#include <TFT_eSPI.h>
 #include <Wire.h>
 #include "MAX30105.h"
 #include "heartRate.h"
-#include <esp_gap_bt_api.h>   // para esp_bt_gap_set_scan_mode()
+#include <esp_gap_bt_api.h>
 
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
 #error Bluetooth no habilitado. Revisar sdkconfig / menuconfig.
@@ -26,23 +14,14 @@
 
 #define MOTOR_PIN   23
 
-// Pines ST7789 (deben coincidir con los definidos en platformio.ini via build_flags)
-#define TFT_CS      5
-#define TFT_RST     4
-#define TFT_DC      2
+// 1 = horizontal, 3 = horizontal invertida
+#define ROTACION    1
 
-// MAX30102 Pines
+// Pines I2C del MAX30102
 #define I2C_SDA     21
 #define I2C_SCL     22
 
-// CONFIGURACIÓN DIVISOR DE TENSIÓN
-#define PIN_BAT_ADC 34  // GPIO 34 para el divisor de tensión
-
-const float R1 = 10000.0; // 10k Ohm
-const float R2 = 10000.0; // 10k Ohm
-const float FACTOR_DIVISOR = (R1 + R2) / R2; // Factor x2.0
-
-// COLORES (RGB565)
+// Colores RGB565
 #define C_BG        0x0000
 #define C_WHITE     0xFFFF
 #define C_RED       0xF800
@@ -55,6 +34,7 @@ const float FACTOR_DIVISOR = (R1 + R2) / R2; // Factor x2.0
 #define C_BTBLUE    0x035F
 #define C_YELLOW    0xFFE0
 
+// Umbrales de fases de sueño
 #define PULSO_PROF_MIN    40
 #define PULSO_PROF_MAX    60
 #define PULSO_LIG_MIN     55
@@ -72,7 +52,6 @@ uint8_t  muestrasFase[MAX_MUESTRAS];
 uint16_t indiceMuestra = 0;
 uint32_t tUltimaMuestra = 0;
 
-// ESTADO GLOBAL
 BluetoothSerial SerialBT;
 TFT_eSPI tft = TFT_eSPI();
 MAX30105 particleSensor;
@@ -80,37 +59,47 @@ MAX30105 particleSensor;
 volatile bool estadoConectado  = false;
 bool oximetroActivo   = true;
 bool alarmaActiva     = false;
-
-// Portón de medición
 bool configuracionConfirmada = false;
 
-// Pulso de vibracion de bienvenida (se dispara desde el callback, se ejecuta
-// en el loop para no bloquear la tarea del stack Bluetooth)
+// Vibración de bienvenida (se dispara en el callback, se ejecuta en el loop)
 volatile bool pulsoMotorPendiente = false;
 unsigned long tFinPulsoMotor = 0;
 bool pulsoMotorActivo = false;
 
-uint8_t pantallaActual = 0;
+volatile uint8_t pantallaActual = 0;
 
 int32_t bpmActual  = 0;
 int32_t spo2Actual = 0;
 bool    lecturaValida = false;
 int32_t bpmAnterior = 0;
 
-// Control del apagado diferido de pantalla en Receptor
+// Apagado diferido de pantalla
 unsigned long tApagadoPantalla = 0;
 bool pantallaDebeApagarse = false;
 
-// Control de refresco y variables globales de batería
-unsigned long tUltimaLecturaBat = 0;
-int porcentajeBatActual = -1;
-bool cargandoActual = false;
+// Layout (se calcula según el tamaño real de la pantalla)
+int16_t  W = 160, H = 128;
+uint8_t  TAM_NUM   = 4;
+uint8_t  TAM_TOTAL = 3;
+const int16_t HEADER_H = 16;
+int16_t  Y_ICON  = 42;
+int16_t  Y_NUM   = 60;
+int16_t  Y_LABEL = 98;
 
-// PROTOTIPOS
+// Últimos valores dibujados
+int32_t bpmMostrado  = -1;
+int32_t spo2Mostrado = -1;
+
+void calcularLayout();
+void texto(int16_t x, int16_t y, const String &s, uint8_t size, uint16_t color, uint8_t datum);
 void dibujarPantalla1BT();
 void dibujarPantalla2Monitoreo();
 void dibujarPantalla3Resumen();
+void dibujarPantalla4Apagado();
 void actualizarValoresMonitoreo();
+void mostrarBPM(int32_t v);
+void mostrarSpO2(int32_t v);
+void dibujarValorGrande(int16_t cx, const char *txt);
 void registrarMuestra();
 FaseSueno clasificarFase(int32_t bpm, int32_t variabilidad);
 void calcularResumen(uint16_t &ligero, uint16_t &profundo, uint16_t &rem, uint16_t &total);
@@ -120,72 +109,26 @@ void dibujarGotita(int16_t x, int16_t y, uint16_t color);
 void dibujarIconoBT(int16_t cx, int16_t cy, uint16_t color, uint8_t r);
 String formatearTiempo(uint16_t muestras);
 
-// FUNCIONES BATERÍA CON LÍMITES AJUSTADOS (3.3V - 4.2V)
-float obtenerVoltajeBateria() {
-  long suma = 0;
-  for (int i = 0; i < 30; i++) { // Promediado para eliminar ruido analógico
-    suma += analogRead(PIN_BAT_ADC);
-    delayMicroseconds(200);
-  }
-  float adcPromedio = suma / 30.0;
-
-  // Para ADC_11db el voltaje de referencia práctico en el ESP32 es ~3.15V
-  float voltajePin = (adcPromedio / 4095.0) * 3.15f;
-  return voltajePin * FACTOR_DIVISOR; // FACTOR_DIVISOR = 2.0 (10k / 10k)
+// Toma el tamaño real de la pantalla y ajusta posiciones
+void calcularLayout() {
+  W = tft.width();
+  H = tft.height();
+  TAM_NUM   = (W >= 160) ? 4 : 3;
+  TAM_TOTAL = (W >= 160) ? 3 : 2;
+  Y_ICON  = HEADER_H + 26;
+  Y_NUM   = HEADER_H + 44;
+  Y_LABEL = Y_NUM + 8 * TAM_NUM + 6;
 }
 
-int calcularPorcentaje(float voltaje) {
-  // 3.30V = 0%  --->  4.20V = 100%
-  float V_MIN = 3.30f;
-  float V_MAX = 4.20f;
-
-  int pct = (int)((voltaje - V_MIN) / (V_MAX - V_MIN) * 100.0f);
-  return constrain(pct, 0, 100);
+// Texto alineado según el datum
+void texto(int16_t x, int16_t y, const String &s, uint8_t size, uint16_t color, uint8_t datum) {
+  tft.setTextDatum(datum);
+  tft.setTextSize(size);
+  tft.setTextColor(color);
+  tft.drawString(s, x, y);
 }
 
-bool detectarCarga(float voltaje) {
-  // El TP4056 mantiene la línea a ~4.20V - 4.22V cuando está cargando
-  return (voltaje >= 4.21f);
-}
-
-void actualizarEstadoBateria() {
-  if (millis() - tUltimaLecturaBat > 500 || porcentajeBatActual == -1) {
-    tUltimaLecturaBat = millis();
-
-    float vBat = obtenerVoltajeBateria();
-    int nuevoPct = calcularPorcentaje(vBat);
-    bool nuevaCarga = detectarCarga(vBat);
-
-    Serial.printf("[BAT] Volts leidos: %.2fV | Porcentaje: %d%%\n", vBat, nuevoPct);
-
-    if (nuevoPct != porcentajeBatActual || nuevaCarga != cargandoActual) {
-      porcentajeBatActual = nuevoPct;
-      cargandoActual = nuevaCarga;
-
-      // Pantalla 2 (Monitoreo)
-      if (pantallaActual == 2) {
-        tft.fillRect(80, 0, 48, 14, C_DARKGRAY);
-        tft.setTextSize(1);
-        tft.setTextColor(cargandoActual ? C_GREEN : C_WHITE);
-        tft.setCursor(82, 3);
-        tft.printf("%d%%", porcentajeBatActual);
-        if (cargandoActual) {
-          tft.setTextColor(C_YELLOW);
-          tft.print("+");
-        }
-      }
-      // Pantalla 1 (Sin conexión BT)
-      else if (pantallaActual == 1) {
-        tft.fillRect(30, 105, 90, 20, C_BG);
-        tft.setTextColor(cargandoActual ? C_GREEN : C_WHITE);
-        tft.setCursor(34, 108);
-        tft.printf("BAT: %d%% %s", porcentajeBatActual, cargandoActual ? "[+]" : "");
-      }
-    }
-  }
-}
-
-// CALLBACK BLUETOOTH (corre en la tarea del stack: nada de delay() ni TFT aca)
+// Callback BT: sin delay() ni TFT acá
 void btCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
   if (event == ESP_SPP_SRV_OPEN_EVT || event == ESP_SPP_OPEN_EVT) {
     bool exitoso = (event == ESP_SPP_SRV_OPEN_EVT)
@@ -198,7 +141,7 @@ void btCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
     pantallaDebeApagarse = false;
     Serial.println("[BT] Emisor conectado exitosamente.");
 
-    pulsoMotorPendiente = true;   // el loop hace la vibracion
+    pulsoMotorPendiente = true;
     pantallaActual = 0;
 
   } else if (event == ESP_SPP_CLOSE_EVT) {
@@ -210,34 +153,25 @@ void btCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
   }
 }
 
-// SETUP
 void setup() {
   Serial.begin(115200);
   pinMode(MOTOR_PIN, OUTPUT);
   digitalWrite(MOTOR_PIN, LOW);
 
-  // Configuración del pin analógico de la batería (GPIO 34 es ADC1_CH6)
-  analogSetAttenuation(ADC_11db);
-
-  // 1. Pantalla TFT Primero
+  // Pantalla
   tft.init();
-  tft.setRotation(2);
+  tft.setRotation(ROTACION);
+  calcularLayout();
   tft.fillScreen(C_BG);
-  tft.setTextColor(C_WHITE);
-  tft.setTextSize(1);
-  tft.setCursor(10, 55);
-  tft.println("Iniciando TFT...");
+  texto(W / 2, H / 2, "Iniciando TFT...", 1, C_WHITE, MC_DATUM);
 
-  // 2. Oxímetro
+  // Oxímetro
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000);
 
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
     tft.fillScreen(C_BG);
-    tft.setTextColor(C_RED);
-    tft.setTextSize(1);
-    tft.setCursor(4, 50);
-    tft.println("ERROR MAX30102");
+    texto(W / 2, H / 2, "ERROR MAX30102", 1, C_RED, MC_DATUM);
     Serial.println("[ERROR] MAX30102 no encontrado.");
   } else {
     particleSensor.setup(0x1F, 4, 2, 400, 411, 4096);
@@ -248,22 +182,19 @@ void setup() {
 
   delay(200);
 
-  // 3. Bluetooth: SOLO esclavo. El emisor es el unico que inicia la conexion.
+  // Bluetooth esclavo: solo el emisor inicia la conexión
   SerialBT.register_callback(btCallback);
-  if (SerialBT.begin("ESP32_Receptor")) {   // sin 'true' -> modo esclavo
+  if (SerialBT.begin("ESP32_Receptor")) {
     Serial.println("[BT] Receptor listo.");
   }
 
-  // Garantizamos que quede visible y conectable de forma permanente, asi el
-  // inquiry del emisor lo encuentra en la primera pasada.
   esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
 
   borrarArrayMuestras();
 }
 
-// LOOP
 void loop() {
-  // Vibracion de bienvenida, no bloqueante
+  // Vibración de bienvenida no bloqueante
   if (pulsoMotorPendiente) {
     pulsoMotorPendiente = false;
     digitalWrite(MOTOR_PIN, HIGH);
@@ -275,6 +206,7 @@ void loop() {
     pulsoMotorActivo = false;
   }
 
+  // Comandos del emisor
   if (SerialBT.available()) {
     char c = SerialBT.read();
     Serial.print("[BT] Recibido: "); Serial.println(c);
@@ -295,12 +227,7 @@ void loop() {
     } else if (c == '2') {
       oximetroActivo = false;
       pantallaActual = 4;
-
-      tft.fillScreen(C_BG);
-      tft.setTextSize(1);
-      tft.setTextColor(C_RED);
-      tft.setCursor(12, 55);
-      tft.println("PULSOMETRO APAGADO");
+      dibujarPantalla4Apagado();
 
       tApagadoPantalla = millis() + 3000;
       pantallaDebeApagarse = true;
@@ -311,7 +238,7 @@ void loop() {
     }
   }
 
-  // Apagado diferido
+  // Apagado diferido de pantalla
   if (pantallaDebeApagarse && millis() >= tApagadoPantalla) {
     tft.fillScreen(C_BG);
     pantallaActual = 5;
@@ -319,7 +246,7 @@ void loop() {
     Serial.println("[DISPLAY] Pantalla en negro.");
   }
 
-  // Máquina de estados visual
+  // Selección de pantalla
   if (!estadoConectado) {
     if (pantallaActual != 1) {
       dibujarPantalla1BT();
@@ -332,10 +259,7 @@ void loop() {
     }
   }
 
-  // Refresco continuo de batería
-  actualizarEstadoBateria();
-
-  // Captura de datos
+  // Medición y registro de muestras
   if (estadoConectado && oximetroActivo && configuracionConfirmada && pantallaActual == 2) {
     actualizarValoresMonitoreo();
 
@@ -348,115 +272,147 @@ void loop() {
   delay(20);
 }
 
+// Pantalla 1: Bluetooth desconectado
 void dibujarPantalla1BT() {
   tft.fillScreen(C_BG);
-  dibujarIconoBT(64, 38, C_BTBLUE, 16);
-  tft.setTextSize(2); tft.setTextColor(C_RED); tft.setCursor(6, 62); tft.println("BT DESCON.");
-  tft.setTextSize(1); tft.setTextColor(C_GRAY); tft.setCursor(14, 84); tft.println("Esperando emisor...");
 
-  float v = obtenerVoltajeBateria();
-  bool cargando = detectarCarga(v);
-  tft.setTextColor(cargando ? C_GREEN : C_WHITE);
-  tft.setCursor(34, 108);
-  tft.printf("BAT: %d%% %s", calcularPorcentaje(v), cargando ? "[+]" : "");
+  int16_t colTexto = (2 * W) / 3;
+  int16_t cy = H / 2 - 6;
+
+  dibujarIconoBT(W / 6, cy, C_BTBLUE, 18);
+  texto(colTexto, cy - 20, "BT",      3, C_RED, MC_DATUM);
+  texto(colTexto, cy + 12, "DESCON.", 2, C_RED, MC_DATUM);
+
+  texto(W / 2, H - 30, "Esperando emisor...", 1, C_GRAY, MC_DATUM);
 }
 
+// Pantalla 2: monitoreo en dos columnas (LPM | SpO2)
 void dibujarPantalla2Monitoreo() {
   tft.fillScreen(C_BG);
-  tft.fillRect(0, 0, 128, 14, C_DARKGRAY);
-  dibujarIconoBT(6, 7, C_CYAN, 4);
-  tft.setTextSize(1); tft.setTextColor(C_CYAN); tft.setCursor(16, 3); tft.print("BT");
+
+  // Barra superior
+  tft.fillRect(0, 0, W, HEADER_H, C_DARKGRAY);
+  dibujarIconoBT(7, HEADER_H / 2, C_CYAN, 5);
+  texto(18, HEADER_H / 2, "BT", 1, C_CYAN, ML_DATUM);
 
   if (!configuracionConfirmada) {
-    tft.setTextColor(C_ORANGE); tft.setCursor(32, 3); tft.print("CONF..");
+    texto(34, HEADER_H / 2, "CONF", 1, C_ORANGE, ML_DATUM);
   } else if (!oximetroActivo) {
-    tft.setTextColor(C_ORANGE); tft.setCursor(32, 3); tft.print("OFF");
+    texto(34, HEADER_H / 2, "OFF", 1, C_ORANGE, ML_DATUM);
   }
 
-  float vBat = obtenerVoltajeBateria();
-  porcentajeBatActual = calcularPorcentaje(vBat);
-  cargandoActual = detectarCarga(vBat);
+  // Separadores
+  tft.drawFastHLine(0, HEADER_H, W, C_GRAY);
+  tft.drawFastVLine(W / 2, HEADER_H + 6, H - HEADER_H - 12, C_DARKGRAY);
 
-  tft.setTextColor(cargandoActual ? C_GREEN : C_WHITE);
-  tft.setCursor(82, 3);
-  tft.printf("%d%%", porcentajeBatActual);
-  if (cargandoActual) {
-    tft.setTextColor(C_YELLOW);
-    tft.print("+");
-  }
+  // Columna izquierda: LPM
+  dibujarCorazon(W / 4, Y_ICON, C_RED, TAM_NUM);
+  texto(W / 4, Y_LABEL, "LPM", 1, C_GRAY, TC_DATUM);
 
-  tft.drawFastHLine(0, 14, 128, C_GRAY); tft.drawFastHLine(0, 70, 128, C_GRAY);
-  dibujarCorazon(54, 30, C_RED, 3); tft.setTextSize(3); tft.setTextColor(C_WHITE); tft.setCursor(36, 44);
-  if (lecturaValida && bpmActual > 0)
-    tft.printf("%3d", (int)bpmActual);
-  else
-    tft.print("---");
+  // Columna derecha: SpO2
+  dibujarGotita((3 * W) / 4, Y_ICON - 2, C_CYAN);
+  texto((3 * W) / 4, Y_LABEL, "SpO2", 1, C_GRAY, TC_DATUM);
 
-  tft.setTextSize(1); tft.setTextColor(C_GRAY); tft.setCursor(52, 62); tft.print("LPM");
-  dibujarGotita(34, 92, C_CYAN);
-  dibujarGotita(56, 92, C_CYAN);
-  dibujarGotita(78, 92, C_CYAN);
-  tft.setTextSize(3); tft.setTextColor(C_WHITE); tft.setCursor(28, 106);
-  if (lecturaValida && spo2Actual > 0)
-    tft.printf("%2d%%", (int)spo2Actual);
-  else
-    tft.print("--%");
-  tft.setTextSize(1); tft.setTextColor(C_GRAY); tft.setCursor(46, 122); tft.print("SpO2");
+  // Fuerza redibujado de valores
+  bpmMostrado  = -1;
+  spo2Mostrado = -1;
+  mostrarBPM((lecturaValida && bpmActual > 0) ? bpmActual : 0);
+  mostrarSpO2((lecturaValida && spo2Actual > 0) ? spo2Actual : 0);
 }
 
+// Pantalla 3: resumen del sueño
 void dibujarPantalla3Resumen() {
-  tft.fillScreen(C_BG); tft.fillRect(0, 0, 128, 16, C_DARKGRAY); tft.setTextSize(1); tft.setTextColor(C_WHITE); tft.setCursor(12, 4); tft.print("RESUMEN DEL SUENO");
+  tft.fillScreen(C_BG);
+  tft.fillRect(0, 0, W, HEADER_H, C_DARKGRAY);
+  texto(W / 2, HEADER_H / 2, "RESUMEN DEL SUENO", 1, C_WHITE, MC_DATUM);
+
   uint16_t mLigero, mProfundo, mREM, mTotal;
   calcularResumen(mLigero, mProfundo, mREM, mTotal);
-  String sLig = formatearTiempo(mLigero);
-  String sProf = formatearTiempo(mProfundo);
-  String sREM = formatearTiempo(mREM);
-  String sTot = formatearTiempo(mTotal);
-  uint16_t barMax = 80;
-  uint16_t wLig = (mTotal > 0) ? (uint16_t)((long)mLigero * barMax / mTotal) : 0;
-  tft.setTextColor(C_GREEN); tft.setCursor(2, 26); tft.print("Ligero"); tft.fillRect(44, 24, wLig > 0 ? wLig : 2, 9, C_GREEN);
-  tft.setTextColor(C_WHITE); tft.setCursor(126 - 6*(int)sLig.length(), 26); tft.print(sLig);
-  uint16_t wProf = (mTotal > 0) ? (uint16_t)((long)mProfundo * barMax / mTotal) : 0;
-  tft.setTextColor(C_BLUE); tft.setCursor(2, 46); tft.print("Profundo"); tft.fillRect(44, 44, wProf > 0 ? wProf : 2, 9, C_BLUE);
-  tft.setTextColor(C_WHITE); tft.setCursor(126 - 6*(int)sProf.length(), 46); tft.print(sProf);
-  uint16_t wREM = (mTotal > 0) ? (uint16_t)((long)mREM * barMax / mTotal) : 0;
-  tft.setTextColor(C_ORANGE); tft.setCursor(2, 66); tft.print("REM"); tft.fillRect(44, 64, wREM > 0 ? wREM : 2, 9, C_ORANGE);
-  tft.setTextColor(C_WHITE); tft.setCursor(126 - 6*(int)sREM.length(), 66); tft.print(sREM);
-  tft.drawFastHLine(0, 84, 128, C_GRAY); tft.setTextSize(1); tft.setTextColor(C_GRAY); tft.setCursor(2, 90); tft.print("Total:");
-  tft.setTextColor(C_WHITE); tft.setTextSize(2); tft.setCursor(46, 88); tft.print(sTot);
+
+  const int16_t BAR_X  = 56;
+  const int16_t BAR_H  = 10;
+  const int16_t barMax = W - BAR_X - 44;
+
+  struct Fila { const char *nombre; uint16_t color; uint16_t muestras; int16_t y; };
+  Fila filas[3] = {
+    { "Ligero",   C_GREEN,  mLigero,   28 },
+    { "Profundo", C_BLUE,   mProfundo, 50 },
+    { "REM",      C_ORANGE, mREM,      72 },
+  };
+
+  for (int i = 0; i < 3; i++) {
+    uint16_t w = (mTotal > 0) ? (uint16_t)((long)filas[i].muestras * barMax / mTotal) : 0;
+    texto(4, filas[i].y + BAR_H / 2, filas[i].nombre, 1, filas[i].color, ML_DATUM);
+    tft.fillRect(BAR_X, filas[i].y, barMax, BAR_H, C_DARKGRAY);
+    tft.fillRect(BAR_X, filas[i].y, w > 0 ? w : 2, BAR_H, filas[i].color);
+    texto(W - 4, filas[i].y + BAR_H / 2, formatearTiempo(filas[i].muestras), 1, C_WHITE, MR_DATUM);
+  }
+
+  tft.drawFastHLine(0, 94, W, C_GRAY);
+  texto(4, 111, "Total", 1, C_GRAY, ML_DATUM);
+  texto(W - 4, 111, formatearTiempo(mTotal), TAM_TOTAL, C_WHITE, MR_DATUM);
+
   borrarArrayMuestras();
 }
 
+// Pantalla 4: pulsómetro apagado
+void dibujarPantalla4Apagado() {
+  tft.fillScreen(C_BG);
+  texto(W / 2, H / 2 - 12, "PULSOMETRO", 2, C_RED, MC_DATUM);
+  texto(W / 2, H / 2 + 12, "APAGADO",    2, C_RED, MC_DATUM);
+}
+
+// Número grande centrado en su columna
+void dibujarValorGrande(int16_t cx, const char *txt) {
+  int16_t colW = W / 2;
+  tft.fillRect(cx - colW / 2 + 3, Y_NUM, colW - 6, 8 * TAM_NUM, C_BG);
+  texto(cx, Y_NUM, txt, TAM_NUM, C_WHITE, TC_DATUM);
+}
+
+void mostrarBPM(int32_t v) {
+  if (v == bpmMostrado) return;
+  bpmMostrado = v;
+  char buf[8];
+  if (v > 0) snprintf(buf, sizeof(buf), "%d", (int)v);
+  else       strcpy(buf, "---");
+  dibujarValorGrande(W / 4, buf);
+}
+
+void mostrarSpO2(int32_t v) {
+  if (v == spo2Mostrado) return;
+  spo2Mostrado = v;
+  char buf[8];
+  if (v > 0) snprintf(buf, sizeof(buf), "%d%%", (int)v);
+  else       strcpy(buf, "--%");
+  dibujarValorGrande((3 * W) / 4, buf);
+}
+
+// Lee el sensor, calcula BPM y SpO2 y actualiza la pantalla
 void actualizarValoresMonitoreo() {
   static const byte TASA_PROMEDIO = 4;
   static byte tasas[TASA_PROMEDIO];
   static byte indice = 0;
-  static byte muestrasValidas = 0;   // cuantos latidos reales hay ya en el buffer
+  static byte muestrasValidas = 0;
   static long totalTasas = 0;
   static long ultimoLatido = 0;
 
   long valor = particleSensor.getIR();
+
+  // Sin dedo: reinicia el promedio
   if (valor < 50000) {
     lecturaValida = false;
-
-    // Sin dedo: se limpia el buffer de latidos para que la proxima vez que
-    // se apoye el dedo el promedio arranque de cero (antes se mezclaba con
-    // datos viejos, retrasando aun mas la primera lectura correcta).
     muestrasValidas = 0;
     indice = 0;
     totalTasas = 0;
     ultimoLatido = 0;
     bpmActual = 0;
 
-    tft.setTextSize(3);
-    tft.setTextColor(C_WHITE);
-    tft.fillRect(36, 44, 60, 22, C_BG);
-    tft.setCursor(36, 44); tft.print("---");
-    tft.fillRect(28, 106, 72, 22, C_BG);
-    tft.setCursor(28, 106);
-    tft.print("--%");
+    mostrarBPM(0);
+    mostrarSpO2(0);
     return;
   }
+
+  // BPM: promedio de los últimos latidos
   if (checkForBeat(valor)) {
     long delta = millis() - ultimoLatido;
     ultimoLatido = millis();
@@ -467,15 +423,12 @@ void actualizarValoresMonitoreo() {
       totalTasas += tasas[indice];
       indice = (indice + 1) % TASA_PROMEDIO;
 
-      // Antes se dividia siempre por TASA_PROMEDIO (4), aunque el buffer
-      // todavia tuviera ceros adentro: eso mostraba un BPM muy por debajo
-      // del real durante los primeros 3 latidos. Ahora se divide por la
-      // cantidad real de muestras que ya se cargaron, asi el primer latido
-      // ya muestra un valor correcto en vez de esperar a que se llene el buffer.
       if (muestrasValidas < TASA_PROMEDIO) muestrasValidas++;
       bpmActual = totalTasas / muestrasValidas;
     }
   }
+
+  // SpO2 estimada por relación rojo/infrarrojo
   long rojo = particleSensor.getRed();
   if (rojo > 0 && valor > 0) {
     float ratio = (float)rojo / (float)valor;
@@ -484,29 +437,11 @@ void actualizarValoresMonitoreo() {
     spo2Actual = (int32_t)spo2Calc; lecturaValida = true;
   }
 
-  static int32_t bAnt = -1, sAnt = -1;
-  if (bpmActual != bAnt) {
-    tft.setTextSize(3);
-    tft.setTextColor(C_WHITE);
-    tft.fillRect(28, 44, 80, 22, C_BG);
-    tft.setCursor(36, 44);
-    if (bpmActual > 0)
-      tft.printf("%3d", (int)bpmActual);
-    else tft.print("---");
-    bAnt = bpmActual;
-  }
-
-  if (spo2Actual != sAnt){
-    tft.setTextSize(3);
-    tft.setTextColor(C_WHITE);
-    tft.fillRect(20, 106, 88, 22, C_BG);
-    tft.setCursor(28, 106);
-    if (spo2Actual > 0)
-      tft.printf("%2d%%", (int)spo2Actual); else tft.print("--%");
-    sAnt = spo2Actual;
-  }
+  mostrarBPM(bpmActual);
+  mostrarSpO2(spo2Actual);
 }
 
+// Guarda la fase de sueño de la muestra actual
 void registrarMuestra() {
   if (indiceMuestra >= MAX_MUESTRAS)
     return;
@@ -515,6 +450,7 @@ void registrarMuestra() {
   muestrasFase[indiceMuestra++] = (uint8_t)fase; bpmAnterior = bpmActual;
 }
 
+// Clasifica la fase según BPM y variabilidad
 FaseSueno clasificarFase(int32_t bpm, int32_t variabilidad) {
   if (bpm <= 0)
     return FASE_NINGUNA;
@@ -525,6 +461,7 @@ FaseSueno clasificarFase(int32_t bpm, int32_t variabilidad) {
   return FASE_LIGERO;
 }
 
+// Cuenta muestras por fase
 void calcularResumen(uint16_t &l, uint16_t &p, uint16_t &r, uint16_t &t) {
   l = p = r = 0;
   for (uint16_t i = 0; i < indiceMuestra; i++) {
@@ -544,12 +481,14 @@ void borrarArrayMuestras() {
   tUltimaMuestra = millis();
 }
 
+// Cada muestra son 30 s; devuelve "XhYYm"
 String formatearTiempo(uint16_t muestras) {
-  uint32_t seg = (uint32_t)muestras * 30; char buf[8];
+  uint32_t seg = (uint32_t)muestras * 30; char buf[10];
   snprintf(buf, sizeof(buf), "%dh%02dm", (int)(seg / 3600), (int)((seg % 3600) / 60));
   return String(buf);
 }
 
+// Corazón pixelado 5x4
 void dibujarCorazon(int16_t x, int16_t y, uint16_t color, uint8_t escala) {
   static const uint8_t corazon[4][5] = { {0,1,0,1,0}, {1,1,1,1,1}, {0,1,1,1,0}, {0,0,1,0,0} };
   int16_t ox = x - (5 * escala) / 2;
