@@ -43,6 +43,12 @@
 #define UMBRAL_VAR_BAJO   5
 #define UMBRAL_VAR_ALTO   10
 
+// Detección de latidos
+#define FS_HZ             100     // 400 Hz / promedio de 4 muestras = 100 muestras/s (ver setup del sensor)
+#define AMPLITUD_MINIMA   15.0f   // pulso mínimo aceptado (en cuentas del sensor)
+#define LED_AMP           0x1F    // corriente inicial de los LEDs (0x1F = media, 0x3F = alta)
+#define AUTO_LED          1       // 1 = ajusta sola la corriente: baja si el sensor se satura, sube si la señal es floja
+
 #define MAX_MUESTRAS  960
 #define INTERVALO_MUESTRA_MS  30000UL
 
@@ -175,8 +181,8 @@ void setup() {
     Serial.println("[ERROR] MAX30102 no encontrado.");
   } else {
     particleSensor.setup(0x1F, 4, 2, 400, 411, 4096);
-    particleSensor.setPulseAmplitudeRed(0x3F);
-    particleSensor.setPulseAmplitudeIR(0x3F);
+    particleSensor.setPulseAmplitudeRed(LED_AMP);
+    particleSensor.setPulseAmplitudeIR(LED_AMP);
     Serial.println("[OXI] Oximetro iniciado.");
   }
 
@@ -235,6 +241,7 @@ void loop() {
     } else if (c == '3') {
       configuracionConfirmada = true;
       Serial.println("[CONFIG] Alarma confirmada en el emisor. Habilitando mediciones.");
+      if (pantallaActual == 2) dibujarPantalla2Monitoreo();   // actualiza el "CONF" del encabezado
     }
   }
 
@@ -269,7 +276,8 @@ void loop() {
     }
   }
 
-  delay(20);
+  // Delay corto: el FIFO del sensor guarda 32 muestras (~0,3 s a 100 Hz)
+  delay(5);
 }
 
 // Pantalla 1: Bluetooth desconectado
@@ -387,54 +395,125 @@ void mostrarSpO2(int32_t v) {
   dibujarValorGrande((3 * W) / 4, buf);
 }
 
-// Lee el sensor, calcula BPM y SpO2 y actualiza la pantalla
+// Lee todas las muestras del FIFO, detecta latidos con un detector propio y calcula BPM y SpO2
 void actualizarValoresMonitoreo() {
-  static const byte TASA_PROMEDIO = 4;
-  static byte tasas[TASA_PROMEDIO];
-  static byte indice = 0;
-  static byte muestrasValidas = 0;
-  static long totalTasas = 0;
-  static long ultimoLatido = 0;
+  static const uint8_t N_BPM = 5;
+  static float bpms[N_BPM];
+  static uint8_t nBpm = 0, iBpm = 0;
+  static float dc = 0, lp = 0, ampMax = 0;   // filtros y amplitud de referencia
+  static float p1 = 0, p2 = 0;               // señal filtrada de las 2 muestras anteriores
+  static uint32_t idx = 0, ultimoPico = 0;   // contadores en muestras (no en millis)
+  static bool dedoPresente = false;
+  static long ultimoIR = 0, ultimoRojo = 0;
+  static uint8_t ledAmp = LED_AMP;   // corriente actual de los LEDs
+  static long irMaxG = 0;            // IR máximo del último intervalo (para el ajuste automático)
+  static uint32_t tGanancia = 0;
 
-  long valor = particleSensor.getIR();
+  particleSensor.check();  // trae las muestras nuevas del sensor
 
-  // Sin dedo: reinicia el promedio
-  if (valor < 50000) {
+  while (particleSensor.available()) {
+    long ir   = particleSensor.getFIFOIR();
+    long rojo = particleSensor.getFIFORed();
+    particleSensor.nextSample();
+
+    if (ir > irMaxG) irMaxG = ir;
+
+    // Sin dedo: reinicia todo
+    if (ir < 50000) {
+      dedoPresente = false;
+      nBpm = 0; iBpm = 0;
+      dc = lp = ampMax = p1 = p2 = 0;
+      idx = 0; ultimoPico = 0;
+      continue;
+    }
+
+    // Primera muestra con dedo: arranca los filtros
+    if (!dedoPresente) {
+      dedoPresente = true;
+      dc = ir; lp = ampMax = p1 = p2 = 0;
+      idx = 0; ultimoPico = 0;
+    }
+
+    idx++;
+    ultimoIR = ir;
+    ultimoRojo = rojo;
+
+    // Filtrado: quita la componente continua, invierte (el pulso sube) y suaviza
+    dc += 0.01f * (ir - dc);
+    float ac = dc - ir;
+    lp += 0.25f * (ac - lp);
+
+    // Amplitud de referencia que decae lentamente -> umbral adaptativo
+    ampMax = max(lp, ampMax * 0.995f);
+    float umbral = max(0.5f * ampMax, AMPLITUD_MINIMA);
+
+    // Pico = la muestra anterior (p1) es máximo local y supera el umbral.
+    // Se ignoran las primeras muestras mientras los filtros se estabilizan.
+    uint32_t idxPico = idx - 1;
+    bool picoValido = (idx > FS_HZ) && (p1 > p2) && (p1 >= lp) && (p1 > umbral);
+    bool pasoRefractario = (ultimoPico == 0) || ((idxPico - ultimoPico) > (FS_HZ * 3 / 10));  // >300 ms
+
+    if (picoValido && pasoRefractario) {
+      if (ultimoPico != 0) {
+        float intervalo = (float)(idxPico - ultimoPico);
+        float bpm = 60.0f * FS_HZ / intervalo;
+        if (bpm > 30 && bpm < 200) {
+          bpms[iBpm] = bpm;
+          iBpm = (iBpm + 1) % N_BPM;
+          if (nBpm < N_BPM) nBpm++;
+
+          // Mediana de los últimos valores: ignora latidos perdidos o duplicados
+          float orden[N_BPM];
+          for (uint8_t i = 0; i < nBpm; i++) orden[i] = bpms[i];
+          for (uint8_t i = 1; i < nBpm; i++) {
+            float v = orden[i]; int8_t j = i - 1;
+            while (j >= 0 && orden[j] > v) { orden[j + 1] = orden[j]; j--; }
+            orden[j + 1] = v;
+          }
+          bpmActual = (int32_t)(orden[nBpm / 2] + 0.5f);
+        }
+      }
+      ultimoPico = idxPico;
+    }
+
+    p2 = p1;
+    p1 = lp;
+  }
+
+#if AUTO_LED
+  // Ajuste automático de la corriente de los LEDs (solo con el dedo apoyado)
+  if (!dedoPresente) {
+    irMaxG = 0;
+    tGanancia = millis();
+  } else if (millis() - tGanancia >= 1000) {
+    tGanancia = millis();
+    uint8_t nueva = ledAmp;
+    if (irMaxG >= 250000 && ledAmp > 0x08)      nueva = (uint8_t)(ledAmp * 3 / 4);                   // saturado: bajar
+    else if (irMaxG < 70000 && ledAmp < 0x7F)   nueva = (ledAmp + 4 > 0x7F) ? 0x7F : (ledAmp + 4);   // señal floja: subir
+    if (nueva != ledAmp) {
+      ledAmp = nueva;
+      particleSensor.setPulseAmplitudeRed(ledAmp);
+      particleSensor.setPulseAmplitudeIR(ledAmp);
+      idx = 0; ultimoPico = 0;   // los filtros se reestabilizan tras el cambio
+    }
+    irMaxG = 0;
+  }
+#endif
+
+  if (!dedoPresente) {
     lecturaValida = false;
-    muestrasValidas = 0;
-    indice = 0;
-    totalTasas = 0;
-    ultimoLatido = 0;
     bpmActual = 0;
-
     mostrarBPM(0);
     mostrarSpO2(0);
     return;
   }
 
-  // BPM: promedio de los últimos latidos
-  if (checkForBeat(valor)) {
-    long delta = millis() - ultimoLatido;
-    ultimoLatido = millis();
-    float beatsPerMinute = 60.0f / (delta / 1000.0f);
-    if (beatsPerMinute < 255 && beatsPerMinute > 20) {
-      totalTasas -= tasas[indice];
-      tasas[indice] = (byte)beatsPerMinute;
-      totalTasas += tasas[indice];
-      indice = (indice + 1) % TASA_PROMEDIO;
-
-      if (muestrasValidas < TASA_PROMEDIO) muestrasValidas++;
-      bpmActual = totalTasas / muestrasValidas;
-    }
-  }
-
   // SpO2 estimada por relación rojo/infrarrojo
-  long rojo = particleSensor.getRed();
-  if (rojo > 0 && valor > 0) {
-    float ratio = (float)rojo / (float)valor;
-    float spo2Calc = 110.0f - 25.0f * ratio;
-    spo2Calc = constrain(spo2Calc, 85.0f, 100.0f);
-    spo2Actual = (int32_t)spo2Calc; lecturaValida = true;
+  if (ultimoRojo > 0 && ultimoIR > 0) {
+    float ratio = (float)ultimoRojo / (float)ultimoIR;
+    float spo2Calc = constrain(110.0f - 25.0f * ratio, 85.0f, 100.0f);
+    spo2Actual = (int32_t)spo2Calc;
+    lecturaValida = true;
   }
 
   mostrarBPM(bpmActual);
